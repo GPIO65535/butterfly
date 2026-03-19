@@ -1,0 +1,76 @@
+# STM32Cube + Keil (uVision) project
+# Keep source/config files; ignore build outputs and local user files.
+
+# -----------------------------
+# Generic build artifacts
+# -----------------------------
+*.o
+*.obj
+*.d
+*.dep
+*.lst
+*.map
+*.axf
+*.elf
+*.hex
+*.bin
+*.lib
+*.a
+*.lnp
+*.crf
+*.htm
+*.html
+*.tmp
+*.bak
+*.log
+
+# -----------------------------
+# Keil/uVision generated output folders
+# -----------------------------
+MDK-ARM/butterfly/
+MDK-ARM/**/Listings/
+MDK-ARM/**/Objects/
+
+# Keil assistant temp/logs
+MDK-ARM/.vscode/
+MDK-ARM/*.log
+
+# -----------------------------
+# User-local IDE/session files
+# -----------------------------
+*.uvoptx
+*.uvguix.*
+
+# Optional editor/local OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# -----------------------------
+# CMSIS large optional content
+# (not required for this firmware build)
+# -----------------------------
+Drivers/CMSIS/DSP/
+Drivers/CMSIS/NN/
+Drivers/CMSIS/RTOS/
+Drivers/CMSIS/Documentation/
+Drivers/CMSIS/Device/ST/STM32G4xx/Source/Templates/iar/
+Drivers/CMSIS/docs/
+Drivers/CMSIS/Core/Template/
+Drivers/CMSIS/Device/ST/STM32G4xx/Source/Templates/arm/
+Drivers/CMSIS/Device/ST/STM32G4xx/Source/Templates/gcc/
+Drivers/STM32G4xx_HAL_Driver/Src/*_template.c
+Drivers/STM32G4xx_HAL_Driver/Inc/*_template.h
+
+# -----------------------------
+# Keep essential project files (document intent)
+# -----------------------------
+# !Core/**
+# !Drivers/**
+# !Middlewares/**
+# !MDK-ARM/*.uvprojx
+# !MDK-ARM/*.s
+# !MDK-ARM/*.sct
+# !*.ioc
+# !.mxproject
