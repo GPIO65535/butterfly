@@ -27,6 +27,8 @@
 /* USER CODE BEGIN Includes */
 #include"tim.h"
 #include"adc.h"
+#include"Com_IMU.h"
+#include"Com_PID.h"
 #include<math.h>
 
 /* USER CODE END Includes */
@@ -44,16 +46,16 @@
 #define Servo_Step 5.0f
 TaskHandle_t Servo_Handle;
 #define Servo_Task_priority 5
-#define Servo_Task_Stack_Size 128
+#define Servo_Task_Stack_Size 256
 TaskHandle_t Battery_Handle;
 #define Battery_Task_priority 4
-#define Battery_Task_Stack_Size 128
+#define Battery_Task_Stack_Size 192
 TaskHandle_t LED_Handle;
 #define LED_Task_priority 3
 #define LED_Task_Stack_Size 128
 TaskHandle_t Control_Handle;
 #define Control_Task_priority 6
-#define Control_Task_Stack_Size 128
+#define Control_Task_Stack_Size 512
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -112,10 +114,22 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  xTaskCreate(Servo_Task, "Servo_Task", Servo_Task_Stack_Size, NULL, Servo_Task_priority, &Servo_Handle);
-  xTaskCreate(Battery_Task, "Battery_Task", Battery_Task_Stack_Size, NULL, Battery_Task_priority, &Battery_Handle);
-  xTaskCreate(LED_Task, "LED_Task", LED_Task_Stack_Size, NULL, LED_Task_priority, &LED_Handle);
-  xTaskCreate(Control_Task, "Control_Task", Control_Task_Stack_Size, NULL, Control_Task_priority, &Control_Handle);
+  if (xTaskCreate(Servo_Task, "Servo_Task", Servo_Task_Stack_Size, NULL, Servo_Task_priority, &Servo_Handle) != pdPASS)
+  {
+    Error_Handler();
+  }
+  if (xTaskCreate(Battery_Task, "Battery_Task", Battery_Task_Stack_Size, NULL, Battery_Task_priority, &Battery_Handle) != pdPASS)
+  {
+    Error_Handler();
+  }
+  if (xTaskCreate(LED_Task, "LED_Task", LED_Task_Stack_Size, NULL, LED_Task_priority, &LED_Handle) != pdPASS)
+  {
+    Error_Handler();
+  }
+  if (xTaskCreate(Control_Task, "Control_Task", Control_Task_Stack_Size, NULL, Control_Task_priority, &Control_Handle) != pdPASS)
+  {
+    Error_Handler();
+  }
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
@@ -142,6 +156,19 @@ void StartDefaultTask(void const * argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 volatile float ctrl_bias = 0.0f;  /* 转向偏差：遥控器CH1，±15° */
+
+static float ClampF(float val, float min, float max)
+{
+  if (val < min)
+  {
+    return min;
+  }
+  if (val > max)
+  {
+    return max;
+  }
+  return val;
+}
 
 static uint32_t AngleToPulse(float angle)
 {
@@ -203,17 +230,111 @@ void LED_Task(void*para)
 }
 void Control_Task(void*para)
 {
-  HAL_TIM_IC_Start_IT(&htim2,TIM_CHANNEL_4);
+  const float dt_s = 0.01f;
+  const float gyro_lsb_per_dps = 16.4f;
+  const float accel_lsb_per_g = 16384.0f;   /* ±2g -> 16384 LSB/g */
+  const float alpha = 0.98f;
+
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  IMU_Attitude_t att;
+
+  /* 保存一次标定出来的零偏，供内环角速度反馈使用 */
+  IMU_AxisFloat_t gyro_bias_dps = {0.0f, 0.0f, 0.0f};
+
+  /* 外环: 角度PID (roll) -> 输出目标角速度(dps) */
+  PID roll_angle_pid = {
+    .kp = 4.0f,
+    .ki = 0.0f,
+    .kd = 0.2f,
+    .actual = 0.0f,
+    .target = 0.0f,
+    .error = 0.0f,
+    .last_error = 0.0f,
+    .integral = 0.0f,
+    .derivative = 0.0f,
+    .output = 0.0f
+  };
+
+  /* 内环: 角速度PID -> 输出转向偏置 */
+  PID roll_rate_pid = {
+    .kp = 0.12f,
+    .ki = 0.0f,
+    .kd = 0.0f,
+    .actual = 0.0f,
+    .target = 0.0f,
+    .error = 0.0f,
+    .last_error = 0.0f,
+    .integral = 0.0f,
+    .derivative = 0.0f,
+    .output = 0.0f
+  };
+
+  if (Com_IMU_Init() != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* 静止标定零偏: 200次, 5ms间隔, 约1秒 */
+  if (Com_IMU_CalibrateGyroBias(200U, 5U, gyro_lsb_per_dps, &gyro_bias_dps) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
+
   while(1)
   {
-    if(ppm_flag)
+    float roll_target_deg = 0.0f;
+    IMU_AxisRaw_t gyro_raw;
+    IMU_AxisFloat_t gyro_dps;
+
+    if (ppm_flag)
     {
-      ppm_flag=0;
-      /* CH1左右摇杆 -> 转向：1500us居中，±500us -> ±15° */
-      ctrl_bias = (ppm_recv[0] - 1500) / 500.0f * 15.0f;
+      ppm_flag = 0;
+
+      /* CH1左右摇杆作为roll目标角：1500us居中，±500us -> ±20° */
+      roll_target_deg = ((float)ppm_recv[0] - 1500.0f) / 500.0f * 20.0f;
+      roll_target_deg = ClampF(roll_target_deg, -20.0f, 20.0f);
+      roll_angle_pid.target = roll_target_deg;
     }
-    vTaskDelay(pdMS_TO_TICKS(20));
+
+    if (Com_IMU_UpdateAttitude(dt_s, gyro_lsb_per_dps, accel_lsb_per_g, alpha, &att) == HAL_OK)
+    {
+      roll_angle_pid.actual = att.roll_deg;
+
+      if (Com_IMU_ReadGyroRaw(&gyro_raw) == HAL_OK)
+      {
+        Com_IMU_GyroRawToDps(&gyro_raw, &gyro_dps, gyro_lsb_per_dps);
+
+        /* 内环角速度反馈也减去零偏 */
+        gyro_dps.x -= gyro_bias_dps.x;
+        gyro_dps.y -= gyro_bias_dps.y;
+        gyro_dps.z -= gyro_bias_dps.z;
+
+        /* 级联PID: 外环输出角速度目标, 内环根据实际角速度求控制 */
+        roll_rate_pid.actual = gyro_dps.x;
+        PID_Cascade(&roll_angle_pid, &roll_rate_pid, dt_s);
+
+        /* 映射到已有舵机转向偏置，按需要可改符号 */
+        ctrl_bias = ClampF(-roll_rate_pid.output, -15.0f, 15.0f);
+      }
+    }
+
+    vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(10));
+    
   }
+}
+
+void vApplicationMallocFailedHook(void)
+{
+  Error_Handler();
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  (void)xTask;
+  (void)pcTaskName;
+  Error_Handler();
 }
 /* USER CODE END Application */
 
